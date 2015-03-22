@@ -1,0 +1,111 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Jerrod Sharpe"
+date: "Sunday, March 22, 2015"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+```{r, warning=FALSE}
+rm(list=ls())
+setwd("~/Coursera/Practical Machine Learning")
+fileUrl = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+fileUrl = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+#download.file(fileUrl, destfile= "./pml_training.csv")
+#download.file(fileUrl, destfile= "./pml_testing.csv")
+library(caret)
+library(randomForest)
+library(rpart)
+library(partykit)
+library(C50)
+
+pmltraining = read.csv("pml_training.csv")
+pmltesting = read.csv("pml_testing.csv")
+```
+
+Question:
+Can we correctly identify the five different ways participants were asked to perform barbell lifts correctly and incorrectly?
+
+```{r, echo=FALSE}
+
+
+inTrain = createDataPartition(pmltraining$classe, p = 1/2)[[1]]
+training = pmltraining[ inTrain,]
+testing = pmltraining[-inTrain,]
+
+plot(training$classe)
+```
+
+Input Data:
+Data from accelerometers on the belt, forearm, arm, and dumbell of 6 participant within the study. There are 160 variable in the training data set (including the 'classe' the class type ). However, they are number of variables with lots of missing values (both blank and NA). They seem to only have values when the "new window" variable is "yes". These variables were removed. The first seven columns were removed, "X" to "window num". The data was split eveningly between training and testing sets. 
+
+The distribution of classe type is relatively even, with class A having the most. This indicates that the training set is likely balanced and there is little need to penalize the model for getting class A type wrong versus any of the other class types (see plot). 
+```{r}
+dim(training)
+training = training[,!sapply(training,function(x) any(is.na(x)))]
+training = training[,!sapply(training,function(x) any(x==""))]
+dim(training)
+str(training)
+training = training[,-seq(1,7)]
+```
+
+Following Max Kuhn's example (www.edii.uclm.es/~useR-2013/Tutorials/kuhn/user_caret_2up.pdf), I first ran the rpart model with a shallow set of trees on the training set. Then I ran with no restrictions on the depth of trees. The accuracy improved from 37% to 73%. 
+
+```{r}
+rpart <- rpart(classe ~ ., data = training, method = "class",
+               control = rpart.control(maxdepth = 2))
+rpart1 <- as.party(rpart)
+plot(rpart1)
+rpartPred<- predict(rpart, testing, type = "class")
+confusionMatrix(rpartPred, testing$classe)
+rpart2 <- rpart(classe ~ ., data = training, method = "class")
+rpartPred2<- predict(rpart2, testing, type = "class")
+confusionMatrix(rpartPred2, testing$classe)
+```
+
+In continuing with Max Kuhn's examples, I used three repeats of 10-fold cross-validation on the rpart model. It increased the accuracy to 82%. 
+
+```{r}
+
+cvCtrl <- trainControl(method = "repeatedcv", repeats = 3,
+                       allowParallel = TRUE,
+                       classProbs = TRUE)
+set.seed(1)
+rpartTune <- train(classe ~ ., data = training, method = "rpart",
+                   tuneLength = 30,
+                   trControl = cvCtrl)
+
+rpartPred3 <- predict(rpartTune, testing)
+confusionMatrix(rpartPred3, testing$classe)
+
+```
+
+Finally, I performed Boosting via C5.0 (follwing Max Kuhn's example). 
+```{r}
+
+cvCtrl <- trainControl(method = "repeatedcv", repeats = 1,
+                       number = 3,
+                       allowParallel = TRUE,
+                       classProbs = TRUE)
+grid <- expand.grid(.model = "tree",
+                    .trials = c(1:50),
+                    .winnow = FALSE)
+set.seed(1)
+c5Tune <- C5.0(training[,-53], training$classe,
+                            control = C5.0Control(),
+                            trials = 50,
+                            winnow = True,
+                            rules=TRUE)
+c5TunePred <- predict(c5Tune, testing)
+confusionMatrix(c5TunePred, testing$classe)
+predictions <- as.numeric(predict(c5Tune, testing, type = 'class'))
+multiclass.roc(testing$classe, predictions)
+```
+
+Since the multiclass ROC indicated that it is over 99.5% accurate (my out of sample error rate being less than 1%), I stop following Kuhn and use c5Tune as my final model. Using the pml-testing data set and my c5Tune model, I got 20 out of 20. 
